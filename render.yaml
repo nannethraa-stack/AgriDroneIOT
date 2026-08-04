@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: agri-drone-backend
+    env: docker
+    rootDir: backend
+    plan: free
+    autoDeploy: true
+
+  - type: web
+    name: agri-drone-dashboard
+    env: static
+    rootDir: apps/dashboard
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    plan: free
+    autoDeploy: true
