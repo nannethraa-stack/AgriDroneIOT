@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 
 type Telemetry = {
   temperature: number;
@@ -16,6 +16,7 @@ type AlertItem = {
   severity: "info" | "warning" | "critical";
   title: string;
   detail: string;
+  action: string;
   time: string;
 };
 
@@ -28,7 +29,15 @@ type Snapshot = {
   signal: number;
 };
 
+type Diagnosis = {
+  title: string;
+  detail: string;
+  action: string;
+  severity: AlertItem["severity"];
+};
+
 const clamp = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n));
+const nowTime = () => new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
 const metricCard: React.CSSProperties = {
   background: "rgba(255,255,255,0.08)",
@@ -50,27 +59,10 @@ const valueStyle: React.CSSProperties = {
   color: "#fff",
 };
 
-function nowTime() {
-  return new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-}
-
 function severityStyle(severity: AlertItem["severity"]): React.CSSProperties {
-  if (severity === "critical") {
-    return {
-      background: "rgba(239,68,68,0.12)",
-      border: "1px solid rgba(239,68,68,0.3)",
-    };
-  }
-  if (severity === "warning") {
-    return {
-      background: "rgba(245,158,11,0.12)",
-      border: "1px solid rgba(245,158,11,0.3)",
-    };
-  }
-  return {
-    background: "rgba(59,130,246,0.12)",
-    border: "1px solid rgba(59,130,246,0.3)",
-  };
+  if (severity === "critical") return { background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.3)" };
+  if (severity === "warning") return { background: "rgba(245,158,11,0.12)", border: "1px solid rgba(245,158,11,0.3)" };
+  return { background: "rgba(59,130,246,0.12)", border: "1px solid rgba(59,130,246,0.3)" };
 }
 
 function Gauge({
@@ -107,20 +99,13 @@ function Gauge({
   );
 }
 
-function Sparkline({
-  values,
-  stroke = "#38bdf8",
-}: {
-  values: number[];
-  stroke?: string;
-}) {
+function Sparkline({ values, stroke = "#38bdf8" }: { values: number[]; stroke?: string }) {
   const width = 320;
   const height = 90;
   const padding = 8;
   const min = Math.min(...values);
   const max = Math.max(...values);
   const range = max - min || 1;
-
   const points = values
     .map((v, i) => {
       const x = padding + (i * (width - padding * 2)) / (values.length - 1);
@@ -128,7 +113,6 @@ function Sparkline({
       return `${x},${y}`;
     })
     .join(" ");
-
   return (
     <svg viewBox={`0 0 ${width} ${height}`} width="100%" height={height}>
       <polyline fill="none" stroke={stroke} strokeWidth="3" points={points} />
@@ -136,135 +120,97 @@ function Sparkline({
   );
 }
 
+function inferDiagnosis(t: Telemetry): Diagnosis {
+  const lowSoil = t.soilMoisture < 35;
+  const lowBattery = t.battery < 25;
+  const hot = t.temperature > 35;
+  const weakSignal = t.signal < 60;
+  const gpsLost = !t.gpsLock;
+
+  if (gpsLost && weakSignal && lowBattery) {
+    return {
+      title: "Early-Stage Fungal Infection / Root Rot",
+      detail: "Localized stress pattern with unstable telemetry and elevated field risk.",
+      action: "Trigger localized bio fungicide or targeted copper application.",
+      severity: "critical",
+    };
+  }
+
+  if (lowSoil && hot) {
+    return {
+      title: "Nitrogen (N) Starvation",
+      detail: "Uniform canopy fading with metabolic stress and reduced growth vigor.",
+      action: "Execute a variable-rate nitrogen top-up via spreader map.",
+      severity: "warning",
+    };
+  }
+
+  if (lowSoil && weakSignal) {
+    return {
+      title: "Potassium (K) Deficiency",
+      detail: "Marginal yellowing and necrosis are consistent with mobile nutrient reallocation.",
+      action: "Apply targeted potassium-rich liquid fertilizer to the zone.",
+      severity: "warning",
+    };
+  }
+
+  if (hot && t.humidity < 45) {
+    return {
+      title: "Iron (Fe) or Zinc (Zn) Deficiency",
+      detail: "Interveinal chlorosis on younger leaves and stunting suggest high pH lockout.",
+      action: "Spot-apply a chelated iron/zinc foliar spray via drone sprayer.",
+      severity: "critical",
+    };
+  }
+
+  return {
+    title: "Mixed Canopy Stress",
+    detail: "Crop stress indicators are present; confirm with drone AI and soil context.",
+    action: "Continue monitoring and schedule a zone-level re-scan.",
+    severity: "info",
+  };
+}
+
 export default function App() {
   const [telemetry, setTelemetry] = useState<Telemetry>({
-    temperature: 28.4,
-    humidity: 61,
-    soilMoisture: 48,
-    battery: 86,
-    altitude: 32,
-    speed: 11,
+    temperature: 31,
+    humidity: 54,
+    soilMoisture: 46,
+    battery: 84,
+    altitude: 28,
+    speed: 10,
     gpsLock: true,
-    signal: 93,
+    signal: 91,
   });
-
-  const [alerts, setAlerts] = useState<AlertItem[]>([
-    {
-      id: "ok",
-      severity: "info",
-      title: "All systems nominal",
-      detail: "Telemetry is stable and within expected ranges.",
-      time: nowTime(),
-    },
-  ]);
-
+  const [alerts, setAlerts] = useState<AlertItem[]>([]);
   const [history, setHistory] = useState<Snapshot[]>([]);
   const [lastUpdated, setLastUpdated] = useState(new Date());
-  const alertSeenRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     const id = setInterval(() => {
       setTelemetry((prev) => {
         const next = {
-          temperature: clamp(prev.temperature + (Math.random() - 0.5) * 1.2, 24, 39),
-          humidity: clamp(prev.humidity + (Math.random() - 0.5) * 3.5, 35, 92),
-          soilMoisture: clamp(prev.soilMoisture + (Math.random() - 0.5) * 4, 20, 95),
+          temperature: clamp(prev.temperature + (Math.random() - 0.5) * 1.6, 24, 40),
+          humidity: clamp(prev.humidity + (Math.random() - 0.5) * 3.8, 32, 92),
+          soilMoisture: clamp(prev.soilMoisture + (Math.random() - 0.5) * 3.6, 15, 95),
           battery: clamp(prev.battery - 0.05 - Math.random() * 0.08, 5, 100),
-          altitude: clamp(prev.altitude + (Math.random() - 0.5) * 2.5, 0, 120),
+          altitude: clamp(prev.altitude + (Math.random() - 0.5) * 2.6, 0, 120),
           speed: clamp(prev.speed + (Math.random() - 0.5) * 1.8, 0, 35),
           gpsLock: Math.random() > 0.97 ? false : Math.random() > 0.03 ? true : prev.gpsLock,
-          signal: clamp(prev.signal + (Math.random() - 0.5) * 2.2, 45, 100),
+          signal: clamp(prev.signal + (Math.random() - 0.5) * 2.2, 40, 100),
         };
 
-        const newAlerts: AlertItem[] = [];
-        if (next.battery < 25) {
-          newAlerts.push({
-            id: "battery-critical",
-            severity: "critical",
-            title: "Battery low",
-            detail: `Battery at ${next.battery.toFixed(0)}%. Return to base soon.`,
-            time: nowTime(),
-          });
-        } else if (next.battery < 40) {
-          newAlerts.push({
-            id: "battery-warning",
-            severity: "warning",
-            title: "Battery declining",
-            detail: `Battery at ${next.battery.toFixed(0)}%. Plan recharge window.`,
-            time: nowTime(),
-          });
-        }
+        const diagnosis = inferDiagnosis(next);
+        const newAlert: AlertItem = {
+          id: diagnosis.title,
+          severity: diagnosis.severity,
+          title: diagnosis.title,
+          detail: diagnosis.detail,
+          action: diagnosis.action,
+          time: nowTime(),
+        };
 
-        if (next.soilMoisture < 35) {
-          newAlerts.push({
-            id: "soil-critical",
-            severity: "critical",
-            title: "Irrigation needed",
-            detail: `Soil moisture is ${next.soilMoisture.toFixed(0)}%.`,
-            time: nowTime(),
-          });
-        } else if (next.soilMoisture < 45) {
-          newAlerts.push({
-            id: "soil-warning",
-            severity: "warning",
-            title: "Soil moisture dropping",
-            detail: `Current moisture ${next.soilMoisture.toFixed(0)}%.`,
-            time: nowTime(),
-          });
-        }
-
-        if (next.temperature > 35) {
-          newAlerts.push({
-            id: "heat-warning",
-            severity: "warning",
-            title: "Heat stress risk",
-            detail: `Temperature peaked at ${next.temperature.toFixed(1)}°C.`,
-            time: nowTime(),
-          });
-        }
-
-        if (!next.gpsLock) {
-          newAlerts.push({
-            id: "gps-critical",
-            severity: "critical",
-            title: "GPS signal lost",
-            detail: "Drone navigation is using fallback stabilization mode.",
-            time: nowTime(),
-          });
-        }
-
-        if (next.signal < 60) {
-          newAlerts.push({
-            id: "signal-warning",
-            severity: "warning",
-            title: "Weak telemetry signal",
-            detail: `Signal strength is ${next.signal.toFixed(0)}%.`,
-            time: nowTime(),
-          });
-        }
-
-        if (newAlerts.length === 0) {
-          newAlerts.push({
-            id: "ok",
-            severity: "info",
-            title: "All systems nominal",
-            detail: "Telemetry is stable and within expected ranges.",
-            time: nowTime(),
-          });
-        }
-
-        for (const alert of newAlerts) {
-          if (!alertSeenRef.current.has(alert.id + alert.title)) {
-            alertSeenRef.current.add(alert.id + alert.title);
-            setAlerts((prevAlerts) => [alert, ...prevAlerts].slice(0, 6));
-          } else if (alert.severity !== "info") {
-            setAlerts((prevAlerts) => {
-              const filtered = prevAlerts.filter((a) => a.id !== alert.id);
-              return [alert, ...filtered].slice(0, 6);
-            });
-          }
-        }
-
+        setAlerts((prevAlerts) => [newAlert, ...prevAlerts.filter((a) => a.id !== newAlert.id)].slice(0, 6));
         setHistory((prevHistory) =>
           [
             ...prevHistory,
@@ -278,7 +224,6 @@ export default function App() {
             },
           ].slice(-20)
         );
-
         setLastUpdated(new Date());
         return next;
       });
@@ -287,12 +232,9 @@ export default function App() {
     return () => clearInterval(id);
   }, []);
 
-  const missionStatus = useMemo(() => {
-    if (telemetry.battery < 25) return "Return to base";
-    if (!telemetry.gpsLock) return "Searching GPS";
-    if (telemetry.soilMoisture < 35) return "Irrigation needed";
-    return "Mission active";
-  }, [telemetry]);
+  const diagnosis = useMemo(() => inferDiagnosis(telemetry), [telemetry]);
+  const missionStatus =
+    diagnosis.severity === "critical" ? "Intervention needed" : diagnosis.severity === "warning" ? "Zone under stress" : "Mission active";
 
   const latest = history.slice(-8);
   const tempTrend = latest.length >= 2 ? latest.map((h) => h.temperature) : [telemetry.temperature, telemetry.temperature + 1];
@@ -330,20 +272,13 @@ export default function App() {
             >
               AgriDroneIOT
             </div>
-            <h1 style={{ margin: "8px 0 6px", fontSize: 34 }}>Real-time dashboard</h1>
+            <h1 style={{ margin: "8px 0 6px", fontSize: 34 }}>Crop stress intelligence dashboard</h1>
             <div style={{ color: "rgba(255,255,255,0.72)" }}>
-              Live telemetry simulation for drone monitoring and crop operations.
+              Drone AI symptom detection, VOC interpretation, and action prescriptions.
             </div>
           </div>
-
-          <div
-            style={{
-              ...metricCard,
-              minWidth: 260,
-              animation: telemetry.battery < 25 || !telemetry.gpsLock ? "pulse 1.2s infinite" : "none",
-            }}
-          >
-            <div style={labelStyle}>Mission status</div>
+          <div style={{ ...metricCard, minWidth: 280 }}>
+            <div style={labelStyle}>Field diagnosis</div>
             <div style={{ fontSize: 24, fontWeight: 700 }}>{missionStatus}</div>
             <div style={{ marginTop: 8, color: "rgba(255,255,255,0.72)", fontSize: 13 }}>
               Updated {lastUpdated.toLocaleTimeString()}
@@ -358,14 +293,12 @@ export default function App() {
           <Gauge label="Battery" value={telemetry.battery} suffix="%" />
           <Gauge label="Altitude" value={telemetry.altitude} suffix=" m" min={0} max={150} />
           <Gauge label="Speed" value={telemetry.speed} suffix=" m/s" min={0} max={40} />
-
           <div style={metricCard}>
             <div style={labelStyle}>GPS lock</div>
             <div style={{ ...valueStyle, color: telemetry.gpsLock ? "#4ade80" : "#f87171" }}>
               {telemetry.gpsLock ? "Locked" : "Lost"}
             </div>
           </div>
-
           <div style={metricCard}>
             <div style={labelStyle}>Signal strength</div>
             <div style={valueStyle}>{telemetry.signal.toFixed(0)}%</div>
@@ -374,32 +307,20 @@ export default function App() {
 
         <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 16, marginTop: 16 }}>
           <div style={metricCard}>
-            <div style={labelStyle}>Drone feed</div>
+            <div style={labelStyle}>Drone AI visual symptom reading</div>
             <div
               style={{
-                height: 320,
+                padding: 16,
                 borderRadius: 16,
-                background:
-                  "radial-gradient(circle at top, rgba(56,189,248,0.35), transparent 40%), linear-gradient(180deg, rgba(15,23,42,0.9), rgba(2,6,23,0.95))",
-                position: "relative",
-                overflow: "hidden",
+                background: "rgba(15,23,42,0.9)",
                 border: "1px solid rgba(255,255,255,0.08)",
               }}
             >
-              <div style={{ position: "absolute", inset: 16, border: "1px solid rgba(255,255,255,0.15)", borderRadius: 12 }} />
-              <div style={{ position: "absolute", left: 24, top: 24, fontSize: 12, color: "#a7f3d0" }}>LIVE</div>
-              <div style={{ position: "absolute", right: 24, top: 24, fontSize: 12, color: "#93c5fd" }}>CAM 01</div>
-              <div style={{ position: "absolute", bottom: 24, left: 24, color: "rgba(255,255,255,0.8)" }}>
-                Simulated drone stream overlay
+              <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 8 }}>{diagnosis.title}</div>
+              <div style={{ color: "rgba(255,255,255,0.78)", marginBottom: 14 }}>{diagnosis.detail}</div>
+              <div style={{ fontWeight: 700, color: diagnosis.severity === "critical" ? "#fca5a5" : diagnosis.severity === "warning" ? "#fcd34d" : "#93c5fd" }}>
+                Prescription: {diagnosis.action}
               </div>
-              <div
-                style={{
-                  position: "absolute",
-                  inset: 0,
-                  background:
-                    "repeating-linear-gradient(180deg, transparent 0 20px, rgba(255,255,255,0.03) 20px 21px)",
-                }}
-              />
             </div>
           </div>
 
@@ -412,6 +333,7 @@ export default function App() {
                   <div style={{ fontSize: 11, opacity: 0.85 }}>{alert.time}</div>
                 </div>
                 <div style={{ fontSize: 13, color: "rgba(255,255,255,0.82)" }}>{alert.detail}</div>
+                <div style={{ fontSize: 12, marginTop: 8, color: "rgba(255,255,255,0.78)" }}>Action: {alert.action}</div>
               </div>
             ))}
           </div>
@@ -431,15 +353,64 @@ export default function App() {
             <Sparkline values={batteryTrend} stroke="#f59e0b" />
           </div>
         </div>
-      </div>
 
-      <style>{`
-        @keyframes pulse {
-          0% { box-shadow: 0 0 0 0 rgba(248,113,113,0.45); }
-          70% { box-shadow: 0 0 0 18px rgba(248,113,113,0); }
-          100% { box-shadow: 0 0 0 0 rgba(248,113,113,0); }
-        }
-      `}</style>
+        <div style={{ ...metricCard, marginTop: 16 }}>
+          <div style={labelStyle}>Mock drone spray action panel</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
+            <ActionTile
+              title="Spray mode"
+              value={
+                diagnosis.title.includes("Iron") || diagnosis.title.includes("Zinc")
+                  ? "Chelated foliar spray"
+                  : diagnosis.title.includes("Potassium")
+                    ? "K-rich liquid spray"
+                    : diagnosis.title.includes("Nitrogen")
+                      ? "Variable-rate N top-up"
+                      : diagnosis.title.includes("Fungal")
+                        ? "Targeted bio fungicide"
+                        : "Standby"
+              }
+            />
+            <ActionTile title="Target zone" value="Zone A12 / stress cluster" />
+            <ActionTile title="Coverage" value="15.8 ha planned" />
+            <ActionTile title="Flow rate" value="1.4 L/min simulated" />
+            <ActionTile title="Altitude" value="3.5 m AGL" />
+            <ActionTile title="Path" value="Adaptive raster sweep" />
+          </div>
+          <div style={{ marginTop: 14, display: "flex", gap: 12, flexWrap: "wrap" }}>
+            <button style={actionButton("#22c55e")} onClick={() => alert(`Starting spray mission: ${diagnosis.action}`)}>
+              Start spray mission
+            </button>
+            <button style={actionButton("#38bdf8")} onClick={() => alert("Loading zone map and dosage prescription.")}>
+              Load zone map
+            </button>
+            <button style={actionButton("#f59e0b")} onClick={() => alert("Simulated mission paused.")}>
+              Pause mission
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
+}
+
+function ActionTile({ title, value }: { title: string; value: string }) {
+  return (
+    <div style={{ padding: 14, borderRadius: 14, background: "rgba(15,23,42,0.9)", border: "1px solid rgba(255,255,255,0.08)" }}>
+      <div style={{ fontSize: 12, color: "rgba(255,255,255,0.65)", marginBottom: 6 }}>{title}</div>
+      <div style={{ fontSize: 16, fontWeight: 700 }}>{value}</div>
+    </div>
+  );
+}
+
+function actionButton(color: string): React.CSSProperties {
+  return {
+    border: "none",
+    borderRadius: 12,
+    padding: "12px 16px",
+    background: color,
+    color: "white",
+    fontWeight: 700,
+    cursor: "pointer",
+  };
 }
