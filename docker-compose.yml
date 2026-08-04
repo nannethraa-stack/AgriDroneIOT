@@ -16,6 +16,6 @@ services:
       - "5173:5173"
 
   mobile:
-    build: ./apps/mobile
+    build: ./apps/mobile 
     ports:
       - "8081:8081"
